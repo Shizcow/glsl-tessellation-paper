@@ -1,0 +1,944 @@
+#+title: Abstract Algebra, Tessellations, and Shaders
+#+subtitle: Using GLSL and Abstract Algebra to Render Simple Tesselations of the Plane
+#+date: Sunday, Dec 5, 2021
+#+author: Devin Pohl
+#+affiliation: Colorado State University
+#+professor: Dr. Hortensia Soto, Dr. Jessi Lajos
+#+course: MATH 366: Introduction to Abstract Algebra
+
+#+abstract: This work relates the problem of procedurally rendering tessellations with concepts from abstract algebra. After narrowing the domain of the problem and picking a specific example, a naive implementation with several issues is presented. Then, concepts from abstract algebra are applied in order to simplify and improve the process. Finally, an optimized implementation is presented. Throughout this paper, GLSL shader code is used to generate images in order to set implementation goals and restrictions, as well as show progress. This work concludes with a brief discussion on generalizing the presented solution, as well as how it could potentially be optimized further.
+
+* Org/LaTeX Preamble                                                 :ignore:
+** Org Options                                                      :ignore:
+# TOC is done manually
+#+options: toc:nil ':t todo:nil
+
+#+startup: content
+
+** Elisp setup                                                      :ignore:
+#+name: org-get-attr
+#+begin_src elisp :var keyword="course" :exports none :eval only-export
+(car (last (car (org-collect-keywords (list keyword)))))
+#+end_src
+
+** Org/general options                                              :ignore:
+# TOC is done manually
+#+options: toc:nil ':t todo:nil
+
+** APA Setup                                                        :ignore:
+*** Class Options                                                  :ignore:
+#+LaTeX_class: apa7
+#+LaTeX_class_options: [stu,11pt,floatsintext,donotrepeattitle]
+
+*** Title Page Information                                         :ignore:
+#+begin_src latex-header :noweb yes
+\affiliation{<<org-get-attr("affiliation")>>}
+\course{<<org-get-attr("course")>>}
+\professor{<<org-get-attr("professor")>>}
+
+% workaround to get abstract on the title page in stu mode
+\note{\vspace{3cm}\begin{minipage}{0.7\textwidth}\section*{\normalsize Abstract}\small <<org-get-attr("abstract")>>\end{minipage}}
+#+end_src
+
+*** Title Page Fixes                                               :ignore:
+# The author note is stupid and wants to be a part of the table of contents
+# In order to fix that, redefine the thing that adds an entry to the table of contents
+#+begin_src latex-header
+\let\oldaddcontentsline\addcontentsline
+\renewcommand{\addcontentsline}[3]{}
+#+end_src
+# Note that the actual expansion is done in \maketitle
+# so fix the definition after \maketitle, allowing other sections to work just fine
+#+begin_export latex
+\let\addcontentsline\oldaddcontentsline
+#+end_export
+
+# Org integration -- makes the date render correctly on the title page
+#+begin_src latex-header
+\let\date\duedate
+#+end_src
+
+*** Proper Formatting of Title                                     :ignore:
+# The title+subtitle is the wrong size when exported with org
+# This makes the maintitle a bit bigger so that the subtitle comes in at the correct size
+#+begin_src latex-header
+\let\oldtitle\title
+\renewcommand{\title}[1]{\oldtitle{\Large #1}}
+#+end_src
+
+** Latex Class General Formatting                                   :ignore:
+*** Fix Formatting for Long Links in References                    :ignore:
+#+begin_src latex-header
+\def\UrlBreaks{\do\/\do-}
+#+end_src
+
+*** Tables                                                         :ignore:
+# Provides a P{width} tabular environment
+#+begin_src latex-header
+\usepackage{array}
+\newcolumntype{P}[1]{>{\centering\arraybackslash}p{#1}}
+#+end_src
+
+*** Spacing                                                        :ignore:
+#+begin_src latex-header
+\usepackage{setspace}
+\doublespacing
+#+end_src
+
+** Listings                                                         :ignore:
+#+begin_src latex-header
+\usepackage[compatibility=false]{caption}
+\setminted{fontsize=\scriptsize}
+#+end_src
+
+* Front Matter                                                       :ignore:
+** DONE Table of Contents                                           :ignore:
+#+toc: headlines 2
+#+latex: \clearpage
+** DONE List of Listings                                            :ignore:
+#+latex: \listoflistings
+** DONE List of Figures                                             :ignore:
+#+latex: \listoffigures
+#+latex: \clearpage
+
+* DONE Introduction
+** DONE Objective
+Tessellations are beautiful, complex patterns that arise from a simple set of rules.
+However, they are hard to realize procedurally.
+This means that for applications such as shaders, programs that generate color and texture in computer graphics, efficient tessellations are out of reach for a naive programmer.
+Luckily, using concepts from abstract algebra, significant improvements and optimizations can be made on tessellation shaders.
+Presented in this text is the approach of a naive programmer, followed by optimizations from abstract algebra, and finally a demonstration of an ideal implementation.
+Throughout this work, examples will be given of shader code, along with its outputs to help visualize the process of improvement.
+While this work does not present a /perfect/ solution, it improves a particular part of the implementation process which is widely applicable to many classes of tessellations and shaders.
+But first, the definition and narrowing of scope for both shaders and tessellations are in order.
+
+** DONE What are Shaders?
+*** Writing                                                        :ignore:
+As described by [[cite:iche-2021-shader-longf-vfxdoc]], shaders are small programs that run directly on a graphics card (GPU).
+They are optimized to run extremely quickly, running hundreds or even thousands of computations in parallel on different elements.
+While elements in a shader are typically pixels, they can also be vertices of a 3D object, outputs of other shaders, or computations entirely unrelated to graphics.
+For the scope of this paper, only pixel shaders will be considered, as they are the most simple to understand and straightforward to demonstrate.
+Note however that topics described in this paper apply to other types of shaders as well.
+
+Shaders are implemented via programming.
+This can be done with raw GPU assembly, but is more commonly done with frameworks, more easily understood abstractions that compile down to assembly.
+Popular frameworks include GLSL, HLSL, and GPGPU.
+For this paper, GLSL will be used -- its similarity with the widely recognized C programming language allows it to be generally understood by a wide audience.
+An example of GLSL shader code can be found in Listing ref:listing-example, adapted from [[cite:&feng-2021-glsl-github]].
+When rendered, this pixel shader produces Figure ref:output-example.
+
+*** Code                                                           :ignore:
+#+begin_export latex
+\begin{figure}[!h]
+\vspace*{-1.0\baselineskip}
+ \begin{minipage}{0.6\textwidth}
+#+end_export
+
+#+caption: GLSL sample code label:listing-example
+#+attr_latex: :options breaklines :float nil :placement H
+#+name: listing-example
+#+BEGIN_SRC glsl :file img_generated/mandel.png :width 3700 :height 5300 :exports both :cache yes
+vec3 mandel(vec2 z0) {
+  float k = 0.0;
+  vec2 z = vec2(0.0);
+  for(int i = 0; i < 420; ++i) {
+    z = vec2(z.x*z.x-z.y*z.y, z.x*z.y*2.0) + z0;
+    if (length(z) > 20.0) break;
+    k += 1.0;
+  }
+  float mu = k + 1.0 - log2(log(length(z)));
+  return sin(mu*0.1 + vec3(0.0,0.5,1.0));
+}
+void main() {
+  float ar = iResolution.x / iResolution.y;
+  vec2 uv = gl_FragCoord.xy / iResolution.yy
+    - vec2(0.66 * ar, 0.5);
+  uv = uv * 2.0 + vec2(-0.3, 0.0);
+  float p = 10.0;
+  float t = mod(13.0, p);
+  if (t > p/2.0) t = p - t;
+  float scale = 0.5 + pow(2.0, t);
+  vec2 offset = vec2(-1.36799, .01);
+  uv += offset*scale;
+  uv /= scale;
+  fragColor = vec4(mandel(uv), 1.0);
+}
+#+END_SRC
+#+begin_export latex
+\end{minipage}
+\begin{minipage}{0.4\textwidth}
+\vspace*{1.65\baselineskip}
+#+end_export
+
+#+name: output-example
+#+attr_latex: :float nil :caption \vspace*{1.5\baselineskip}\captionof{figure}{Rendering of the sample code \label{output-example}}
+#+RESULTS[6dac03f0ad810bc56f7439f38107015134d83291]: listing-example
+[[file:img_generated/mandel.png]]
+
+#+begin_export latex
+\end{minipage}
+\vspace*{-0.5\baselineskip}
+\end{figure}
+#+end_export
+
+** DONE What are Tessellations?
+*** Code                                                           :ignore:
+#+begin_export latex
+\begin{wrapfigure}{r}{0.31\textwidth}
+\vspace*{-2.5\baselineskip}
+\begin{minipage}{0.3\textwidth}
+#+end_export
+
+#+caption: A Penrose Tiling label:fig-penrose
+#+ATTR_LATEX: :float nil
+[[file:img_static/penrose-tiling.png]]
+
+#+begin_export latex
+\vspace*{-0.5\baselineskip}
+#+end_export
+
+#+name: fig-snowflake
+#+ATTR_LATEX: :float nil :caption \vspace*{0.5\baselineskip}\captionof{figure}{A wallpaper group \label{fig-snowflake}}
+[[file:img_static/snowflake-tiling.jpg]]
+
+#+begin_export latex
+\end{minipage}
+\vspace*{-1.0\baselineskip}
+\end{wrapfigure}
+#+end_export
+*** Writing                                                        :ignore:
+Tessellations, or tilings, are described by [[cite:&Branko_Grunbaum1990-01-01]] as methods of filling a space without gaps via patterned placement of geometric shapes.
+One such example can be found in Figure ref:fig-penrose, a tiling described by [[cite:&penrose-1974-role-aesthetics]].
+For the sake of simplicity, the only tessellations directly considered in this paper are those based on the $p1$ wallpaper group -- [[cite:&russian-man-does-geometry]] defines these as tilings which only use a single shape under simple translation.
+Figure ref:fig-snowflake presents an example, a tessellation rendered by [[cite:&milkins-2011-can-tilings]] by sliding around a single shape.
+This class of tiling will be referred to as /simple tessellations/ throughout this paper.
+Such tight restrictions will allow for clear and efficient application of abstract algebra.
+The [[Other Types of Tessellations][end of this paper]] will briefly show how the approach presented in this paper applies to several other classes of tessellations as well.
+
+* DONE A Naive Implementation
+In order to fully appreciate this application of abstract algebra, it helps to see an implementation free from optimization.
+This section will present a standard method of tessellation that an untrained programmer is likely to use.
+The steps of deriving its algorithm will be given in the order that a programmer is likely to take; this will highlight the short-sightedness of an implementation that does not use abstract algebra.
+Once this implementation is presented, its various flaws will be examined and the search for an optimized implementation will begin.
+
+** DONE Step 1: Defining the Base Shape
+The first step to generating a tessellation is producing the base shape.
+This can be done in several ways, but considering that the shape will shortly render in GLSL, the method used should answer the fundamental question: /is some arbitrary point within the base shape or not?/
+This question is so important due to GLSL's nature of computing each pixel entirely independently of all other pixels.
+With this in mind, let us pick a sample shape to tessellate.
+*** DONE Choosing a Shape
+#+begin_comment
+If we have extra time, produce sketches for each of the potential problems
+#+end_comment
+**** Code                                                         :ignore:
+#+begin_src sage :exports none :file img_generated/fig-sample-sketch.png :cache yes
+g = Graphics()
+g += line([(0,1), (0.5,1.5), (1,1)])
+g += line([(-1,-1), (-0.5,-0.5), (0,-1)])
+g += arc((1.5,-1), 2.5, sector=(pi-atan(2/1.5  ),pi))
+g += arc((2.5,-1), 2.5, sector=(pi-atan(2/1.5),pi))
+g.show()
+#+end_src
+
+#+RESULTS[306349d150ffd1eb9aac3d86b167c88c96bcdbb8]:
+
+#+caption: Sketch of the sample tile label:fig-sample-sketch
+#+ATTR_LATEX: :float wrap :width 0.35\textwidth :placement {r}{0.37\textwidth}
+[[file:img_generated/fig-sample-sketch.png]]
+
+**** Writing                                                      :ignore:
+The shape chosen for a sample is important.
+In many ways, it acts as a test of the implementation software.
+As such, the shape should be chosen to highlight and extinguish programming bugs before they occur.
+One potential bug can be found in a lazy modulus-based calculation, where the programmer assumes that for any arbitrary point, the center of its associated tile is closer to any other center.
+This can be highlighted by having a shape with both convex and concave portions.
+Another potential bug is treating both the $x$ and $y$ axes as the same.
+This can be highlighted by choosing a tessellation which tiles in a skewed fashion.
+With these constraints in mind, Figure ref:fig-sample-sketch presents a good sample shape.
+
+*** DONE Realizing in Set Notation
+Following the previous question of /is some arbitrary point within the base shape or not/, it is exceedingly useful to represent the sample shape in set notation.
+This is because set notation directly expresses the answer to this question.
+For example, the set $\{(x,y): (x,y)\in\mathbb{R}^2, x>0\}$ describes the right half of the plane, and the answer to our question is then: /is $x>0$/?
+Unfortunately, our sample shape is not so simple; it is a complex area defined by complex interactions.
+In a way, this is good for the integrity of this test case -- a complex shape will give rise to challenges in implementation that may be encountered in the field.
+
+With that said, there are three parts of the shape to consider: the band between arcs, the union of the upper triangle, and the removal of the bottom triangle.
+The first component, the arc, can be represented as all points inside the circle formed by the left-most arc and outside of the circle formed by the right-most arc with the requisite $y$ coordinate: $A=\{(x, y): (x, y)\in\mathbb{R}^2, y>-1\land y<1 \land \sqrt{(x-1.5)^2+(y+1)^2}<2.5\land \sqrt{(x-2.5)^2+(y+1)^2}>2.5\}$.
+The next component, the upper triangle, is a bit more simple to express with regions formed around lines: $B=\{(x, y): (x, y)\in\mathbb{R}^2, y>1\land x+1>y\land -x+2>y\}$.
+Finally, the lower triangle can be realized in a similar way: $C=\{(x, y): (x, y)\in\mathbb{R}^2, y>-1\land x>y\land -x-1>y\}$.
+Interactions between these three regions produce the base tile: $(A-C)\cup B$.
+*** DONE Rendering the Base Tile
+**** Code                                                         :ignore:
+#+begin_export latex
+\begin{wrapfigure}{r}{0.44\textwidth}
+\vspace*{-2.1\baselineskip}
+\hfill
+\begin{minipage}{0.35\textwidth}
+#+end_export
+
+#+name: backing-xwidth
+#+begin_src glsl :exports none :eval never
+uniform float x_width = 3.0;
+#+end_src
+
+#+name: backing-boilerplate
+#+begin_src glsl :exports none :eval never
+vec2 center_of_buffer =
+  vec2(iResolution.x/2,
+       iResolution.y/2);
+float scale = iResolution.x/x_width;
+
+vec2 get_cartesian_coord() {
+  vec2 c = gl_FragCoord.xy
+    - center_of_buffer.xy;
+  c.y *= -1.0; // GLSL places the y axis backwards, so flip it
+  return c/scale;
+}
+
+vec2 cc = get_cartesian_coord();
+#+end_src
+
+#+caption: Boilerplate code to provide Cartesian coordinates label:listing-boilerplate
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: listing-boilerplate
+#+begin_src glsl :exports code :eval never :noweb yes
+<<backing-xwidth>>
+<<backing-boilerplate>>
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\end{wrapfigure}
+#+end_export
+
+**** Writing                                                      :ignore:
+With the shape definition out of the way, what remains is implementing its definition in GLSL.
+Luckily, GLSL pixels are based on Cartesian coordinates: pixel coordinates are integers, with $x$ starting at $0$ on the left side of the output buffer and $y$ starting at $0$ on the top of the output buffer.
+Little setup is needed to convert this scheme to the plane from Figure ref:fig-sample-sketch.
+The code in Listing ref:listing-boilerplate provides some boilerplate code to convert the given coordinates =gl_FragCoord= into $\mathbb{R}^2$ coordinates stored in the global variable =cc=.
+This code will be implicitly included in all further listings in this paper.
+
+**** Code                                                         :ignore:
+#+name: intile
+#+BEGIN_SRC glsl :exports none :eval never
+bool is_in_band(vec2 coord) {
+  // $A=\{(x, y): (x, y)\in\mathbb{R}^2, y>-1\land y<1 \land \sqrt{(x-1.5)^2+(y+1)^2}<2.5\land \sqrt{(x-2.5)^2+(y+1)^2}>2.5\}$
+  bool in_left = sqrt(pow(coord.x-1.5,2)+pow(coord.y+1,2)) < 2.5;
+  bool outside_right = sqrt(pow(coord.x-2.5,2)+pow(coord.y+1,2))
+    > 2.5;
+  return (coord.y > -1.0) && (coord.y < 1.0)
+    && in_left && outside_right;
+}
+bool is_in_upper_triangle(vec2 coord) {
+  // $B=\{(x, y): (x, y)\in\mathbb{R}^2, y>1\land x+1>y\land -x+2>y\}$
+  return (coord.y > 1.0) && (coord.x+1.0>coord.y)
+    && (-coord.x+2>coord.y);
+}
+bool is_in_lower_triangle(vec2 coord) {
+  // $C=\{(x, y): (x, y)\in\mathbb{R}^2, y>-1\land x>y\land -x-1>y\}$
+  return (coord.y > -1.0) && (coord.x>coord.y)
+    && (-coord.x-1>coord.y);
+}
+bool is_in_base_tile(vec2 coord) {
+  bool A = is_in_band(coord);
+  bool B = is_in_upper_triangle(coord);
+  bool C = is_in_lower_triangle(coord);
+  return (A && !C) || B; // $(A-C)\cup B$
+}
+#+end_src
+
+#+name: sample-main
+#+begin_src glsl :eval never :exports none
+void main() {
+  fragColor = is_in_base_tile(cc) ? vec4(0.0, 0.0, 0.0, 1.0)
+    : vec4(1.0, 1.0, 1.0, 1.0);
+}
+#+end_src
+
+#+begin_export latex
+\begin{figure}[!h]
+\vspace*{-0.5\baselineskip}
+ \begin{minipage}{0.6\textwidth}
+#+end_export
+
+#+caption: GLSL shader for the sample tile label:listing-sample-tile
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+BEGIN_SRC glsl :exports code :eval never :noweb yes
+<<intile>>
+<<sample-main>>
+#+END_SRC
+
+#+name: listing-sample-tile
+#+BEGIN_SRC glsl :file img_generated/sample-tile.png :width 3700 :height 6300 :exports results :cache yes :noweb yes
+<<listing-boilerplate>>
+<<intile>>
+<<sample-main>>
+#+END_SRC
+
+#+begin_export latex
+\end{minipage}
+\begin{minipage}{0.4\textwidth}
+#+end_export
+
+#+name: output-sample-tile
+#+attr_latex: :float nil :caption \vspace*{3.0\baselineskip}\captionof{figure}{Rendering of the sample tile \label{output-sample-tile}}
+#+RESULTS[c9a40a2e3caf8c31a4e0a5719667862acabbadc1]: listing-sample-tile
+[[file:img_generated/sample-tile.png]]
+
+#+begin_export latex
+\end{minipage}
+\vspace*{-0.5\baselineskip}
+\end{figure}
+#+end_export
+
+**** Writing                                                      :ignore:
+\\
+What remains is determining if any given (normalized Cartesian) coordinate falls within the base tile.
+Following the set notation given in [[Realizing in Set Notation][the previous subsection]], implementation is fairly straightforward.
+Simply check whether the current coordinate =cc.xy= is in any of the regions $A$, $B$, or $C$, and apply boolean logic to determine inclusion in the base tile.
+Listing [[ref:listing-sample-tile]] provides the code to do so, and the output is rendered in Figure [[ref:output-sample-tile]].
+As can be seen, the base tile is rendered properly.
+As an additional note, the function =is_in_base_tile=, which combines all the above checks, will also be reused in future listings for brevity.
+** DONE Step 2: Tiling the Base Shape
+**** Writing                                                      :ignore:
+Following the previous work, the next step is to determine whether or not an arbitrary point is in an arbitrary tile.
+GLSL does not make this task easy; because branches or loops -- the most basic methods of making decisions -- are not supported, the only way forward is through modulus arithmetic.
+Listing ref:listing-anytile presents what is essentially the only solution to this problem under
+
+**** Code                                                         :ignore:
+#+begin_export latex
+\begin{wrapfigure}{r}{0.43\textwidth}
+\vspace*{-0.75\baselineskip}
+\hfill
+\begin{minipage}{0.35\textwidth}
+#+end_export
+
+#+caption: Determining if any point is in a given tile label:listing-anytile
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: listing-anytile
+#+begin_src glsl :exports code :eval never
+uniform vec2 tile_max_dimensions =
+  vec2(1.0, 2.5);
+uniform vec2 tile_lower_left_corner =
+  vec2(-1.0, -1.0);
+bool in_offset(vec2 coord, vec2 offset, vec2 repeat) {
+  coord -= tile_lower_left_corner;
+  coord -= offset;
+  coord = mod(coord, tile_max_dimensions * repeat);
+  coord += tile_lower_left_corner;
+  return is_in_base_tile(coord);
+}
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\end{wrapfigure}
+#+end_export
+**** Writing                                                      :ignore:
+#+latex: \noindent
+these constraints.
+The basic structure of this code is to shift the coordinate grid so that the entire base tile has entirely non-negative coordinates, compute the modulus of the current coordinate to place it into the bounding box of the base tile, shift back the coordinate system, and then check if the remaining coordinate is in the base tile.
+This approach has a few issues, which will be discussed later.
+**** Code                                                         :ignore:
+#+begin_export latex
+\begin{wrapfigure}{r}{0.38\textwidth}
+\vspace*{-0.8\baselineskip}
+\hfill
+\begin{minipage}{0.35\textwidth}
+#+end_export
+
+#+caption: Determining the x coordinate of a tile's center label:listing-xcoord
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: listing-xcoord
+#+begin_src glsl :exports code :eval never
+bool in_x(vec2 coord, float x_offset, int repeat) {
+  bool r0 = in_offset(coord, vec2(x_offset, 0.0), vec2(repeat, 3));
+  bool r1 = in_offset(coord, vec2(x_offset, 2.0), vec2(repeat, 3));
+  bool r2 = in_offset(coord, vec2(x_offset, -2.0), vec2(repeat, 3));
+  return r0 || r1 || r2;
+}
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\end{wrapfigure}
+#+end_export
+
+**** Writing                                                      :ignore:
+The next step is getting the center coordinate of a tile.
+As this will be discussed in great detail during the optimization section of this paper, a brief explanation of this concept will suffice.
+The base tile is associated with the coordinate $(0, 0)$.
+The tile immediately to the right of the base tile is associated with the coordinate $(1, 0)$, and so on.
+Getting the tile coordinate is important because it allows for distinguishing between tiles, and coloring them differently.
+Listing ref:listing-xcoord gives what is essentially the only solution to this problem with the given tools.
+
+With all of the groundwork laid, it is finally time to present a proper tessellation shader.
+Listing ref:naive-main presents the code to do this.
+Its structure is fairly simple: establish a few x-coordinate bands and assign different colors to them.
+This shortcut works because the top of the $(0,0)$ tile does not touch the bottom of the $(0,1)$ tile -- a better approach will be discussed later in this paper.
+The output of this shader can be seen in Figure ref:fig-naive.
+
+**** Code                                                         :ignore:
+#+begin_export latex
+\begin{figure}[!h]
+\vspace{-0.5\baselineskip}
+ \begin{minipage}{0.6\textwidth}
+#+end_export
+
+#+caption: GLSL shader for naive tessellation label:naive-main
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: naive-main
+#+begin_src glsl :exports code :eval never 
+void main() {
+  bool x0 = in_x(cc, 0.0, 3);
+  bool x1 = in_x(cc, 1.0, 3);
+  bool x2 = in_x(cc, 2.0, 3);
+  
+  fragColor = x0 ? vec4(0.969, 0.569, 0.863, 1.0) :
+    x1 ? vec4(0.486, 0.976, 0.537, 1.0) :
+    x2 ? vec4(0.976, 0.929, 0.506, 1.0) :
+    vec4(1.0, 1.0, 1.0, 1.0);
+}
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\begin{minipage}{0.4\textwidth}
+#+end_export
+
+#+name: naive-output
+#+begin_src glsl :file img_generated/naive-final.png :width 3700 :height 5665 :exports results :cache yes :noweb yes
+<<listing-boilerplate>>
+<<intile>>
+<<listing-anytile>>
+<<listing-xcoord>>
+<<naive-main>>
+#+end_src
+
+#+name: fig-naive
+#+attr_latex: :float nil :caption \vspace{0.5\baselineskip}\captionof{figure}{Rendering of the naive implementation \label{fig-naive}}
+#+RESULTS[93f4b8ffa3fe2554f2b0d09b6f87098586cf348a]: naive-output
+[[file:img_generated/naive-final.png]]
+
+#+begin_export latex
+\end{minipage}
+\vspace{-3.0\baselineskip}
+\end{figure}
+#+end_export
+
+** DONE Problems With This Approach
+The naive implementation presented above has several problems, which culminate into one fatal design flaw.
+This flaw will be explained in this section, and used as a target to improve during optimization.
+The issue becomes apparent in Listing ref:naive-main with the existence of the variables =x0=, =x1=, and =x2=.
+These three variables track whether or not the current coordinate has a tile coordinate of 0, 1, or 2 (all modulus 3).
+The fact that these are all separate boolean variables -- and not one integer tracking the tile coordinate -- is the heart of the design flaw.
+With this implementation, it is *impossible to get the tile coordinate in linear complexity*.
+Because it is only possible to ask whether or not a given coordinate is in a given tile (thanks to Listing ref:listing-anytile), the absolute tile coordinate cannot be asked for -- only the /modulus/ of the tile coordinate.
+The base of this modulus is also an issue -- the higher the base the more computational complexity.
+For example, with a modulus base of five (which would allow five unique colors instead of the three in Figure ref:fig-naive), variables =x0= through =x4= would be required, and additional computation for each would be required.
+If the $y$ tile coordinate is also required to properly color the tessellation, than the complexity increase would become quadratic.
+Clearly, an optimized solution needs to put the goal of finding the tile coordinate first.
+
+* DONE An Optimized Implementation
+In order to have a better implementation than the naive one given above, the tile coordinate needs to be computed with linear complexity.
+This, fascinatingly, /cannot be done without abstract algebra/.
+In this section, this statement will be proven, and its implications will be used to construct a new algorithm free from the errors above.
+Finally, this algorithm will be implemented in GLSL to produce an optimized shader.
+
+** DONE Defining Tile Coordinates
+*** Code                                                           :ignore:
+#+begin_src sage :exports none :file img_generated/fig-tiles.png :cache yes
+ from sage.misc.lazy_format import LazyFormat
+def tile(x, y, tx, ty=0):
+    g = Graphics()
+    L = [[-1+x,-1+y],[-0.5+x,-0.5+y],[0+x,-1+y]]+[[i/100, sqrt(2.5^2-(i/100-2.5-x)^2)-1+y] for i in range(100*x,100*(x+1))]+[[1+x,1+y],[0.5+x,1.5+y],[0+x,1+y]]+[[i/100, sqrt(2.5^2-(i/100-1.5-x)^2)-1+y] for i in range(100*(x),100*(x-1),-1)]
+    g += polygon2d(L, color="lightgray", edgecolor="blue")
+    g += circle((x,y), 0.05, fill=true, color="black")
+    if tx != False:
+        g += text(LazyFormat("(%s, %s)")%(x, y),(x+tx,y+ty),fontsize=14,color="black")
+    return g
+    
+g = Graphics()
+g += tile(0, 2*0, -0.3, 0.25)
+for x in [-2, -1, 1, 2]:
+    g += tile(x, 2*0, -0.1, 0.25)
+g += tile(0, 2*1, -0.5, -0.25)
+for x in [-2, -1, 1, 2]:
+    g += tile(x, 2*1, -0.25, -0.25)
+g += tile(0, 2*-1, -0.3, 0.25)
+for x in [-2, -1, 1, 2]:
+    g += tile(x, 2*-1, -0.15, 0.25)
+for x in [-3, 3]:
+    for y in [-1, 0, 1]:
+        g += tile(x, 2*y, False)
+g.axes_range(xmin=-2.75, xmax=2.75, ymin=-2.25, ymax=2.25)
+g.show()
+#+end_src
+
+#+RESULTS[1365f62df1251b34a36753b9eb4149805e02eb02]:
+
+#+begin_export latex
+\begin{wrapfigure}{r}{0.35\textwidth}
+\vspace*{-2.65\baselineskip}
+#+end_export
+#+caption: A visualization of tile coordinates label:fig-tile-coords
+#+ATTR_LATEX: :float nil :height 6.21\baselineskip
+[[file:img_generated/fig-tiles.png]]
+
+#+begin_export latex
+\vspace*{-1.0\baselineskip}
+\end{wrapfigure}
+#+end_export
+
+*** Writing                                                        :ignore:
+In order to better find tile coordinates, it helps to define them more clearly.
+For the purposes of this paper, the tile coordinate is the coordinate by which the base tile has been translated by to yield the current tile.
+Figure ref:fig-tile-coords illustrates this concept.
+Abstract algebra gives us the tools to define this concept more generally.
+Let $T$ be a set of points that form a tile, and let $S$ be the set of all tile coordinates.
+For example, in Figure ref:fig-tile-coords, $S=\{(x, y): x\in\{... -1, 0, 1, ...\}, y\in\{... -2, 0, 2, ...\}\}$.
+To tile the plane, repeatedly make copies of $T$, shifting it by every element in $S$.
+For the case of Figure ref:fig-tile-coords, one such example is $T_{(1, 2)}=\{(x_T+1,y_T+2):(x_T,y_T)\in T\}$.
+The set of all tiles $T_S=\{T_s: s\in S\}$ completely fills the plane -- this is the fundamental requirement of a [[What are Tessellations?][simple tessellation]].
+That is to say, $\bigcup T_S = \mathbb{R}^2$.
+In abstract algebra, this is called a /partition/.
+The fact that simple tessellations form a partition of the plane will be exceedingly useful in creating optimized shader code.
+
+** DONE Characterizing the Naive Implementation
+With tile coordinates properly explained, the naive implementation can be revisited.
+The goal of this section is to abstract out all the implementation details and explain /why/ the naive implementation works (and why it fails).
+After sufficient abstraction, the exact problem with the naive implementation will become abundantly clear.
+
+*** DONE Asking for a Tile Coordinate
+One of the fundamental operations of the naive implementation is asking /does coordinate $s$ fall in tile T_s?/
+This operation is shown in Listing ref:listing-anytile.
+Let this operation be $g$.
+Its problem, explained in more detail [[Problems With This Approach][above]], is that $g$ cannot actually be implemented in GLSL for $\mathbb{R}^2$, only a small subset of $\mathbb{R}^2$.
+That is to say, $g(c)$ cannot directly exist in GLSL, only $g(m(c))$, where $m$ is an additional modulus step.
+The workaround operation $m$ is realized in the naive implementation according to the =repeat= parameter of =in_x= in Listing ref:listing-xcoord -- which essentially ignores all inputs for which $g$ does not give a good answer.
+
+*** DONE Modulating the Plane
+The other fundamental operation of the naive implementation is taking the modulus of a coordinate.
+This is done in line 8 of Listing ref:listing-anytile, when the coordinate modulus is taken.
+Let this operation be $f$.
+As an important note, $f$ is /required/ in the naive implementation due to the lack of loops in GLSL.
+
+*** DONE Putting the Two Together
+Given the above definitions of $f$, $g$, and $m$, the basic structure of the shader is $f(g(m(c)))$, where $c$ is the current coordinate.
+In order to have a better implementation, $g$ -- or a function very similar to it -- /must/ be the final function or else information is lost.
+In the following section, concepts from abstract algebra will be used to turn $f(g(m(c)))$ into $g(f(c))$, allowing the programmer to /indirectly/ ask what tile any particular coordinate is a part of.
+
+** DONE Endomorphisms
+In abstract algebra, a homomorphism is a mapping between two groups.
+An endomorphism is a homomorphism that maps from a group to itself.
+Endomorphisms of Abelian groups have a peculiar property, noted by [[cite:&pinter-2010]], where for any two endomorphisms $h$ and $j$ on an Abelian group, $h\circ j = j\circ h$.
+
+It remains to be shown that the above definitions of $f$ and $g$ are endomorphisms.
+As for $g$ (a version /without/ flaws), [[cite:&pinter-2010]] shows that for a group $G$ and a partition $G/H$, $G/H$ is a homomorphic image of $G$.
+And in the case of simple tessellations, the set of all tiles is isomorphic to the set of all tile coordinates.
+Because tile coordinates live in $\mathbb{R}^2$, this means that $\mathbb{R}^2$ is endomorphic to the set of all tile coordinates.
+Thus $g$ is an endomorphism on $\mathbb{R}^2$. The proof for $f$ is similar; because the modulus operation on $\mathbb{R}^2$ produces a partition of rectangles over $\mathbb{R}^2$, then $f$ is an endomorphism on $\mathbb{R}^2$.
+
+Finally, the critical optimization can take place.
+Because $f$ and $g$ are endomorphisms on the Abelian group $\mathbb{R}^2$, the naive approach can be improved from $f(g(m(c)))$ to $g(f(m(c)))$.
+Furthermore, because $f$ and $m$ are both modulation operations, $m$ is redundant in this case and the shader implementation can be characterized simply as $g(f(c))$.
+And because $g$ is acting on a subset of $\mathbb{R}^2$, it can efficiently be implemented in GLSL.
+The only caveat left is that $g(f(c))$ can only give the coordinate of the tile containing particular point /relative to that point/.
+This is a non issue, as getting the non-modulated center coordinate of any particular tile can simply be done as $c+g(f(c))$.
+With the critical issue of the naive implementation removed, a final implementation can begin.
+
+** DONE Visualizing the New Implementation
+*** Code                                                           :ignore:
+#+begin_src sage :exports none :file img_generated/fig-optimized.png :cache yes
+x,y = var('x,y')
+g = Graphics()
+
+L = [[i/10000, sqrt(2.5^2-(i/10000-2.5)^2)-1] for i in range(2087,10000)]+[[1,1],[0.5,1.5],[0,1], [0,0]]
+g += polygon2d(L, color="lightgray", edgecolor="blue")
+
+L = [[i/10000, sqrt(2.5^2-(i/10000-2.5)^2)-1] for i in range(2087,10000)]+[[1,0], [0, 0]]
+g += polygon2d(L, color="lightgray", edgecolor="blue")
+
+L = [[0.5, 1.5], [1, 1], [1, 2]] + [[i/10000, sqrt(2.5^2-(i/10000-2.5)^2)-1+2] for i in range(2087, 0, -1)] + [[0, 1]]
+g += polygon2d(L, color="lightgray", edgecolor="blue")
+
+L = [[0, 1], [0, 2]] + [[i/10000, sqrt(2.5^2-(i/10000-2.5)^2)-1+2] for i in range(2087, 0, -1)] + [[0, 1]]
+g += polygon2d(L, color="lightgray", edgecolor="blue")
+
+def vectt(xy, c):
+    l = 0.1
+    return arrow((xy[0],xy[1]), (c[0]+(xy[0]-c[0])*(1-l),c[1]+(xy[1]-c[1])*(1-l)), arrowsize=2)
+
+def points_to(xy):
+    x = xy[0]
+    y = xy[1]
+    if y < 1:
+        if sqrt((x-2.5)^2+(y+1)^2) <  2.5:
+            return (1,0)
+        return (0, 0)
+    elif y < 1.5:
+        if x+1 < y:
+            return (1, 2)
+        if 2-x < y:
+            return (1, 2)
+        return (0, 0)
+    else:
+        if sqrt((x-2.5)^2+(y+1-2)^2) >  2.5:
+            return (-0.4, 2.4) # visual offset
+        return (1, 2)
+
+for i in range(1, 10):
+    x = i/10
+    for j in range(1, 20):
+        y = j/10
+        g += vectt((x, y), points_to((x, y)))
+
+g.show()
+#+end_src
+
+#+RESULTS[a93b4d408dee1daa82313a86e50b7a4933d6a60c]:
+
+#+begin_export latex
+\begin{wrapfigure}{r}{0.38\textwidth}
+\vspace*{-4\baselineskip}
+#+end_export
+#+caption: Visulization of vector mapping label:fig-optimize
+#+ATTR_LATEX: :float nil :width 0.35\textwidth :placement {r}{0.37\textwidth}
+[[file:img_generated/fig-optimized.png]]
+
+#+begin_export latex
+\vspace*{-2\baselineskip}
+\end{wrapfigure}
+#+end_export
+*** Writing                                                        :ignore:
+Before writing any GLSL code, it is useful to visualize the above optimization.
+Figure ref:fig-optimize presents a visualization of $g(f(c))$, where every point in the rectangle is associated with a vector.
+This vector, when added back to the original $c$, yields the absolute tile coordinate.
+It is derived directly from the $g(f(c))$ algorithm: modulate coordinates, then associate with a tile.
+
+However, the modulation step requires a bit of additional explanation.
+Both the $x$ and $y$ coordinates are modulated to form the rectangle in Figure ref:fig-optimize.
+The base of each modulus operation determines the width and height of this rectangle.
+If these dimensions are too high, then more work is required to query the relative tile coordinate, as there will be more regions in the rectangle.
+If the dimensions are too small, then aliasing occurs and the tessellation falls apart.
+As it turns out, the optimal dimensions for this rectangle can be found by cutting up and rearranging a tile.
+Notice that rearranging the individual regions of Figure ref:fig-optimize yields exactly one copy of the base tile.
+A rigorous proof of this is outside the scope of this paper, as is a discussion of /where/ to place this rectangle to improve performance further.
+As such, Figure ref:fig-optimize will be directly used as a guideline for implementation.
+
+** DONE Final Implementation
+*** Code                                                           :ignore:
+#+begin_export latex
+\begin{wrapfigure}{r}{0.38\textwidth}
+\vspace*{-1.81\baselineskip}
+\hfill
+\begin{minipage}{0.35\textwidth}
+#+end_export
+
+#+caption: Modulating the plane label:listing-simplemod
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: listing-simplemod
+#+begin_src glsl :eval never :exports code
+uniform vec2 rect = vec2(1.0, 2.0);
+vec2 mod_cc = vec2(mod(cc, rect));
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\vspace*{-1.0\baselineskip}
+\end{wrapfigure}
+#+end_export
+*** Writing                                                        :ignore:
+With the mathematics behind simple tessellation thoroughly explored, it is now time to write GLSL code again.
+The first step, $f$, is modulating the plane into the
+#+latex: \newpage
+*** Code                                                           :ignore:
+#+begin_export latex
+\begin{wrapfigure}{R}{0.44\textwidth}
+\vspace*{-0.7\baselineskip}
+\hfill
+\begin{minipage}{0.38\textwidth}
+#+end_export
+
+#+caption: Segmenting the rectangle label:listing-geometry
+#+attr_latex: :options breaklines,mathescape :float nil :placement H
+#+name: listing-geometry
+#+begin_src glsl :eval never :exports code
+bool inside_triangle =
+  (mod_cc.x+1.0>mod_cc.y)
+  && (-mod_cc.x+2>mod_cc.y);
+bool inside_upper_curve =
+  sqrt(pow(mod_cc.x-2.5,2)
+       + pow(mod_cc.y-1,2)) < 2.5;
+bool inside_lower_curve =
+  sqrt(pow(mod_cc.x-2.5,2)
+       + pow(mod_cc.y+1,2)) < 2.5;
+
+vec2 tile_cc_relative =
+  inside_lower_curve ? vec2(1, 0)
+  : inside_triangle ? vec2(0, 0)
+  : inside_upper_curve ? vec2(1, 2)
+  : vec2(0, 2);
+
+vec2 tile_coord() {
+  vec2 tile_cc_relative =
+    inside_lower_curve ? vec2(1, 0)
+    : inside_triangle ? vec2(0, 0)
+    : inside_upper_curve ? vec2(1, 2)
+    : vec2(0, 2);
+  return cc - mod_cc + tile_cc_relative;
+}
+#+end_src
+
+#+begin_export latex
+\end{minipage}
+\end{wrapfigure}
+#+end_export
+
+*** Writing                                                        :ignore:
+#+latex: \noindent
+rectangle formed in Figure ref:fig-optimize.
+This is done quite simply in Listing ref:listing-simplemod.
+The next step is to use the geometry present in the base tile to determine a modulated point's relative tile coordinate.
+This is done in Listing ref:listing-geometry.
+While the implementation of this step seems rather complicated, its details can largely be ignored for purposes of this paper.
+This is due to the fact that all the equations present are determined solely by the geometry of the base tile and can be derived ahead of time or even automatically by another program that generates GLSL code from tile geometry.
+Listing ref:listing-geometry also finishes the main task of calculating the absolute tile coordinate according to the relative tile coordinate.
+
+What remains is applying the newly optimized algorithm.
+While interesting output can be generated in many ways, Listing ref:listing-final randomly colors each tile using the tile coordinate as the seed.
+As can be seen in Figure ref:fig-final, this produces desirable results.
+For reference, [[Appendix A: Full Shader Code][Appendix A]] has the expanded form of Listing ref:listing-final without any parts omitted.
+[[Appendix B: Larger Output][Appendix B]] has a larger output of the shader to showcase its functionality.
+This concludes development on the optimized solution.
+
+*** Code                                                           :ignore:
+#+begin_export latex
+\begin{figure}[h]
+ \begin{minipage}{0.6\textwidth}
+#+end_export
+
+#+caption: Tiling the plane with pseudorandom colors label:listing-final
+#+attr_latex: :options breaklines :float nil :placement H
+#+name: final-main
+#+begin_src glsl :exports code :eval never
+// The canonical GLSL random function
+float rand(vec2 co){
+    return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main( void ) {
+  vec2 abs_tile_coord = tile_coord();
+
+  float R  = rand(abs_tile_coord);
+  float G  = rand(abs_tile_coord+3.14);
+  float B = rand(abs_tile_coord+2.72);
+  
+  fragColor = vec4(R, G, B, 1.0);
+}
+#+end_src
+
+#+name: listing-final
+#+BEGIN_SRC glsl :file img_generated/final.png :width 3700 :height 4000 :exports results :cache yes :noweb yes
+<<listing-boilerplate>>
+<<listing-simplemod>>
+<<listing-geometry>>
+<<final-main>>
+#+END_SRC
+#+begin_export latex
+\end{minipage}
+\begin{minipage}{0.4\textwidth}
+#+end_export
+
+#+name: fig-final
+#+attr_latex: :float nil :caption \vspace{0.5\baselineskip}\captionof{figure}{Rendering of the final implementation \label{fig-final}}
+#+RESULTS[cf6164f86faf3d29d374e4a0da4cea095d5a4c70]: listing-final
+[[file:img_generated/final.png]]
+
+#+begin_export latex
+\end{minipage}
+\end{figure}
+#+end_export
+
+* DONE Conclusion
+
+** DONE Further Optimizations
+*** Code :ignore:
+#+name: listing-alias
+#+BEGIN_SRC glsl :file img_generated/final-alias.png :width 30 :height 40 :exports results :cache yes :noweb strip-export
+<<listing-boilerplate>>
+<<listing-simplemod>>
+<<listing-geometry>>
+<<final-main>>
+#+END_SRC
+
+#+begin_export latex
+\begin{wrapfigure}{r}{0.38\textwidth}
+\vspace*{-2\baselineskip}
+#+end_export
+#+name: fig-alias
+#+attr_latex: :float nil :width 0.35\textwidth :placement {r}{0.4\textwidth} :caption \vspace*{1.0\baselineskip}\captionof{figure}{Aliasing in action \label{fig-alias}}
+#+RESULTS[b4df955146c4814998c538fda8b396860cb879e2]: listing-alias
+[[file:img_generated/final-alias.png]]
+
+#+begin_export latex
+\vspace*{-2\baselineskip}
+\end{wrapfigure}
+#+end_export
+*** Writing :ignore:
+While the optimized implementation above solves several of the problems present in the naive implementation, it is not perfect.
+There are other potential improvements whose implementations are outside the scope of this paper, but worth noting as topics for future study.
+The first is that rendered images are prone to aliasing, a phenomenon where at low resolutions the borders of objects look choppy.
+This can be seen in Figure ref:fig-alias, which presents the output of Listing ref:listing-final except rendered at a native resolution of 40 by 30 pixels.
+Anti-aliasing is the study and mitigation of this phenomenon, which can be solved in the case of shaders with a /fragment/ shader, which uses vector output instead of pixel output.
+Another potential improvement on this implementation is the automatic generation of the segmentation equations from Listing ref:listing-geometry.
+An industry-standard approach to this is to use a higher level programming language which can natively manipulate vector objects, most often a Lisp, to generate GLSL-compatible equations which are then compiled along-side the rest of the optimization.
+This process of converting from a higher level programming language to a lower level one is called /compiling/, and often includes further performance optimizations that a programmer is unlikely to notice or employ.
+These two further optimizations are just the tip of the iceberg; shader efficiency has been studied for decades and will only continue to become more rigorous.
+
+** DONE Other Types of Tessellations
+As briefly mentioned in [[What are Tessellations?][the introduction of this text]], the type of tessellations studied in this paper are from the $p1$ wallpaper group.
+This type of tiling uses a single shape and a single orientation to yield a tiling.
+Other wallpaper groups are relatively straightforward to optimize using similar methods.
+In each of these cases, the method to doing so is just making the rectangle from Figure ref:fig-optimize more complicated.
+For example, the $p2$ group allows rotations of $180^\circ$ and can be optimized by declaring the two base tiles as one meta-tile.
+Then, this meta-tile can be cut up and rearranged into a rectangle.
+So long as the tile coordinates are properly kept track of for each base tile in the meta-tile, the implementation remains the same as in this paper.
+Indeed, this approach works for all wallpaper groups.
+In fact, it actually works for all periodic tessellations, thanks to the properties discussed in the [[Endomorphisms][endomorphisms]] section of this work.
+With only minor modifications, the approach discussed in this paper can be used to generate even more complex tilings.
+
+** DONE Summary
+Procedurally rendering tessellations is a difficult problem in computer graphics.
+This problem was tackled in this paper, by first presenting a naive implementation, and then using concepts of abstract algebra to produce a greatly improved implementation.
+In the end, elegant shader code yielded highly desirable results.
+While the topics in this paper were focused on the example at hand, it was briefly shown how these topics widely apply to a number of adjacent problems, as well as how they could be used as a foundation for further optimization.
+Overall, the problem of rendering tessellations optimally is one where concepts of abstract algebra clearly play an important role.
+
+* Back Matter                                                        :ignore:
+#+latex: \clearpage
+** DONE Appendix A: Full Shader Code
+#+name: listing-ext
+#+attr_latex: :options breaklines,baselinestretch=0.89,fontsize=\small :float nil :placement H
+#+BEGIN_SRC glsl :file img_generated/final_bigger.png :width 8300 :height 12000 :exports both :cache yes :noweb yes
+uniform float x_width = 10.0;
+<<backing-boilerplate>>
+<<listing-simplemod>>
+<<listing-geometry>>
+<<final-main>>
+#+END_SRC
+
+** DONE Appendix B: Larger Output
+
+#+RESULTS[a3cb500b6962bdfe108771668c4ffef42b55e4ee]: listing-ext
+[[file:img_generated/final_bigger.png]]
+
+** DONE References
+# bibtex doesn't want to make "References" bold to match the rest of the headings so I've just told it to shut up and use an org-mode heading -- good for organization anyway
+#+latex: \renewcommand{\bibsection}{}
+bibliographystyle:apalike
+bibliography:references.bib
+#+latex: \clearpage
+
+

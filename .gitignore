@@ -1,0 +1,10 @@
+/_minted-paper/
+*~
+\#*\#
+.\#*
+/ltximg/
+*.bbl
+*.lof
+*.lol
+*.org_archive
+*.tex
