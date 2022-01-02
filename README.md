@@ -5,7 +5,7 @@ The prompt of the paper was "applications of abstract algebra in computer engine
 
 This repository serves as a demo/showcase of several org-mode features.
 Chiefly, [ob-glsl](https://github.com/finalpatch/ob-glsl) and [ob-sagemath](https://github.com/sagemath/ob-sagemath) are used to generate images for this work.
-There are some org-mode specific features that come from [my emacs config](https://github.com/Shizcow/dotfiles), namely generic handling of latex header bits.
+There are some org-mode specific features that come from [my emacs config](https://github.com/Shizcow/dotfiles/blob/master/emacs/conf.org), namely generic handling of latex header bits.
 
 The paper content focuses on more efficiently rendering simple tessellations of the plane.
 This paper presents a robust algorithm that's optimized for GLSL to complete this task.
